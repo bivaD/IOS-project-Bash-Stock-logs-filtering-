@@ -1,0 +1,439 @@
+#!/bin/env bash
+
+#tested at Ubuntu 20.04 with bash version 5.0.17(1)-release
+#tested at merlin.fit.vutbr.cz
+#with directive #!/bin/ksh tested at eva.fit.vutbr.cz
+
+# IOS projekt 1
+# David Novák - xnovak2x
+# 2021/4/1
+
+export POSIXLY_CORRECT=yes
+export LC_ALL=C
+
+#####################################
+# INITIAL VALUES OF SOME VARIABLES  #
+#####################################
+
+HELP="Usage: tradelog [FILTER] [COMMAND] [LOG [LOG2 [...]]
+       tradelog [-h|--help]
+Filter can be combination of:
+  -a DATETIME  Only logs BEFORE this date are considered (excluding this date).
+               DATETIME is in format YYYY-MM-DD HH:MM:SS.
+  -b DATETIME  Only logs BEFORE this date are considered (excluding this date).
+               DATETIME is in format YYYY-MM-DD HH:MM:SS.
+  -t TICKER    Only logs corresponding to a given ticker are considered. With
+               multiple occurrences of the switch, the set of all listed ticker
+               is taken.
+
+  -w WIDTH     For graphs, sets their width, ie the length of the longest line
+               to WIDTH. So, WIDTH must be a positive integer. Multiple
+               occurrences of the switch invalid.
+
+COMMAND can be one of:
+  list-tick    Prints the occurring stock exchange tickers.
+  profit       Prints the total profit from closed positions.
+  pos          Prints the values of currently held positions sorted in
+               descending order by value.
+  last-price   Prints last known price for each ticker.
+  hist-ord     Prints histogram of the number of transactions according to the
+               ticker
+  graph-pos    Prints chart of values of held positions according to the ticker.
+
+-h, --help   displays this help and exits
+"
+DATE_START="0000-00-00 00:00:00"
+DATE_END="9999-99-99 99:99:99"
+WIDTH=unspecified
+COMMAND=unspecified
+ARGUMENTS=no
+
+####################
+#    FUNCTIONS     #
+####################
+
+prepare(){
+  if [ "${#TEXT_ARRAY[@]}" = "0" ] && [ "${#GZ_ARRAY[@]}" = 0 ]; then
+    cat -
+  elif [ "${#TEXT_ARRAY[@]}" != "0" ] && [ "${#GZ_ARRAY[@]}" = 0 ]; then
+    cat $2
+  elif [ "${#TEXT_ARRAY[@]}" = "0" ] && [ "${#GZ_ARRAY[@]}" != 0 ]; then
+    gunzip -c $1
+  elif [ "${#TEXT_ARRAY[@]}" != "0" ] && [ "${#GZ_ARRAY[@]}" != 0 ]; then
+    gunzip -c $1 | cat $2 -
+  fi
+}
+
+
+filter() {
+  awk -F ';' -v start="$1" -v end="$2" '
+  { if (start < $1 && end > $1 ) { print $0 }}
+  ' | awk -F ';' -v tickers="$3" '
+  BEGIN {
+    len=split(tickers,array_tickers," ")
+  }
+  {
+    if( len == 0 ) {
+        print $0
+    } else {
+      for (i in array_tickers) {
+        if( $2 == array_tickers[i] ) {
+          print $0
+          break
+        }
+      }
+    }
+  } '
+}
+
+hist_ord_data(){
+  sort -t\; -k2,2 -k1,1 | awk -F ';' '
+    BEGIN {
+    first = "yes"
+    transactions = ((0))
+    }
+    {
+      ticker = $2
+      transactions += 1
+
+      if (last_ticker != ticker) {
+        if (first == "yes") {
+         first = "no"
+        } else {
+
+          transactions -= 1
+
+
+          printf "%s;%d\n", last_ticker, transactions
+          last_price = $4
+          transactions = ((0))
+
+          transactions += 1
+        }
+      }
+      last_ticker = $2
+    }
+    END {
+      printf "%s;%d\n", last_ticker, transactions
+    }
+  '
+}
+
+last_price(){
+  sort -t\; -k2,2 -k1,1 | awk -F\; '
+    BEGIN {
+    first = "yes"
+    }
+    {
+      ticker = $2
+      if (last_ticker == ticker) {
+        last_price = $4
+      } else {
+        if (first == "yes") {
+         first = "no"
+        } else {
+          printf "%s;%f\n", last_ticker, last_price
+        }
+      }
+      last_ticker = $2
+      last_price = $4
+    }
+    END {
+      printf "%s;%f\n", last_ticker, last_price
+    }
+  '
+}
+
+pos_data(){
+  sort -t\; -k2,2 -k1,1 | awk -F ';' '
+    BEGIN {
+    first = "yes"
+    quantity = ((0))
+    }
+    {
+      ticker = $2
+      if ($3 == "sell") {
+        quantity -= $6
+      } else {
+        quantity += $6
+      }
+
+      if (last_ticker == ticker) {
+        last_price = $4
+      } else {
+        if (first == "yes") {
+         first = "no"
+        } else {
+
+          if ($3 == "sell") {
+           quantity += $6
+          } else {
+            quantity -= $6
+          }
+
+          quantity *= last_price
+          printf "%s;%f\n", last_ticker, quantity
+          quantity = ((0))
+
+          if ($3 == "sell") {
+            quantity -= $6
+          } else {
+            quantity += $6
+          }
+        }
+      }
+      last_ticker = $2
+      last_price = $4
+    }
+    END {
+      quantity *= last_price
+      printf "%s;%f\n", last_ticker, quantity
+    }
+  '
+}
+
+profit(){
+  sort | awk -F ';' '
+    BEGIN {
+      profit = 0
+    }
+    {
+      if ($3 == "sell") {
+        profit = profit + ($4 * $6)
+      } else {
+      profit = profit - ($4 * $6)
+      }
+    }
+     END { printf "%.2f\n", profit }
+  '
+}
+
+list_tick(){
+  sort | awk -F ';' '{ print $2 }' | sort | uniq
+}
+
+hist_draw(){
+  sort -n -r -t\; -k2,2  | awk -F ';' -v width="$1" '
+    BEGIN {
+      biggest_number = 0
+    }
+    {
+      if(width == "unspecified"){
+        tiles = $2
+      } else {
+        if( biggest_number < $2 ) {
+          biggest_number = $2
+        }
+        tiles = int((width/biggest_number)*$2)
+      }
+      printf "%-9s :", $1
+      if(tiles != 0) {
+        printf " "
+      }
+      for(i = 0; i < tiles; i++){
+        printf "#"
+      }
+      printf "\n"
+    }
+  ' | sort
+}
+
+graph_draw() {
+  awk -F\; '{ printf "%f;%s\n", (($2 < 0) ? -$2 : $2), $0 }' | sort -n -r -t\; -k1,1| awk -F ';' -v width="$1" '
+    BEGIN {
+      biggest_number = 0
+    }
+    {
+      if(width == "unspecified"){
+        tiles = int($3/1000)
+      } else {
+        if ( biggest_number < $1 ) {
+          biggest_number = $1
+        }
+        tiles = int((width/biggest_number)*$1)
+      }
+      printf "%-9s :", $2
+
+      if(tiles != 0){
+        printf " "
+      }
+      for(i = 0; i < ((tiles < 0) ? -tiles : tiles); i++){
+        if($3 < 0) {
+          printf "!"
+        } else {
+          printf "#"
+        }
+      }
+      printf "\n"
+    }
+  ' | sort
+}
+
+format_out(){
+  awk -F\; '{ printf "%d;%s\n", length($2), $0 }' | sort -t\; -k1,1 -n -r | awk -F\; '
+    BEGIN {
+      len = 0
+    }
+    {
+      if( $1-4 > len ) {
+        len = $1-4
+      }
+      printf "%-10s: %"len".2f\n", $2, $3
+    }
+  '
+}
+
+############################
+# MAIN BODY OF THE SCRIPT  #
+############################
+
+#argument processing
+until [ $# -le 0 ]; do
+  #echo "0 is $0"
+  #echo "1 is $1"
+  #echo "2 is $2"
+  case "$1" in
+    -a)
+      ARGUMENTS=yes
+      if [ $# -eq 1 ]; then
+        echo "Error: After -a must be entered DATATIME!"
+        exit 1
+      fi
+      shift
+      if [[ "$1" =~ ^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$ ]]; then
+        if [ "$1" \> "$DATE_START" ]; then
+        DATE_START=$1
+        fi
+      else
+        echo "Error: -a DATATIME must be in format 'YYYY-MM-DD HH-MM-SS'!"
+        exit 1
+      fi
+
+      ;;
+    -b)
+      ARGUMENTS=yes
+      if [ $# -eq 1 ]; then
+        echo "Error: After -b must be entered DATATIME!"
+        exit 1
+      fi
+      shift
+      if [[ "$1" =~ ^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$ ]]; then
+        if [ "$1" \< "$DATE_END" ]; then
+        DATE_END=$1
+        fi
+      else
+        echo "Error: -b DATATIME must be in format 'YYYY-MM-DD HH-MM-SS'!"
+        exit 1
+      fi
+
+      ;;
+    -t)
+      ARGUMENTS=yes
+      if [ $# -eq 1 ]; then
+        echo "Error: After -t must be entered TICKER!"
+        exit 1
+      fi
+      shift
+      if [[ "$1" =~ ^[^';'^[:space:]]+$ ]]; then
+        TICKER_ARRAY+=("$1")
+      else
+        echo "Error: -t TICKER must not include ';' or white character!"
+        exit 1
+      fi
+      ;;
+    -w)
+      ARGUMENTS=yes
+      if [ $# -eq 1 ]; then
+        echo "Error: After -w must be entered WIDTH!"
+        exit 1
+      fi
+      shift
+      if [ $WIDTH != unspecified ]; then
+        echo "Error: You can't use -w WIDTH in [FILTER] more tha once!"
+        exit 1
+      fi
+      if [[ $1 =~ ^[0-9]+$ ]]; then
+        WIDTH=$1
+      else
+        echo "Error: -w WIDTH must be positive integer!"
+        exit 1
+      fi
+      ;;
+    list-tick|profit|pos|last-price|hist-ord|graph-pos)
+      ARGUMENTS=yes
+      if [ $COMMAND != unspecified ]; then
+        echo "Error: You can't use more than one [COMMAND] at once!"
+        exit 1
+      fi
+      COMMAND=$1
+      ;;
+    -h | --help)
+      printf "%s", "$HELP"
+      exit 0
+    ;;
+    *)
+      if [ -r "$1" ] ; then
+        #echo exists
+        case $1 in
+            *.gz)
+              #echo "$1 is GZ"
+              GZ_ARRAY+=("$1")
+              ;;
+            *)
+              #echo "$1 is text"
+              TEXT_ARRAY+=("$1")
+              ;;
+        esac
+      else
+        echo "Error: File not found!"
+        exit 1
+      fi
+      ;;
+  esac
+  shift
+done
+
+#if there are no arguments
+if [ $ARGUMENTS == "no" ]; then
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"
+    exit 0
+fi
+#every command has its own case
+
+case $COMMAND in
+  list-tick)
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"  |
+    list_tick
+    exit 0;;
+  profit)
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"  |
+    profit
+    exit 0;;
+  pos)
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"  |
+    pos_data | format_out | sort -t: -n -k2 -r
+    exit 0;;
+  last-price)
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"  |
+    last_price | format_out | sort
+    exit 0;;
+  hist-ord)
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"  |
+    hist_ord_data | hist_draw "$WIDTH"
+    exit 0;;
+  graph-pos)
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"  |
+    pos_data | graph_draw "$WIDTH"
+    exit 0;;
+  unspecified)
+    prepare "${GZ_ARRAY[*]}" "${TEXT_ARRAY[*]}" | filter "$DATE_START" "$DATE_END" "${TICKER_ARRAY[*]}"  |
+    sort
+    exit 0;;
+  *)
+    echo "Error: Invalid COMMAND!"
+    exit 1
+  ;;
+esac
+
+
+
