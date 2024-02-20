@@ -1,7 +1,7 @@
 # IOS (Operating Systems) Project
 in 2. semester, focused on working with Bash. The task was to create an app which 
 filters some stock log files. I'm uploading it to github from the hard drive, 
-I haven't found the original project assignment. We had the task of writing the whole project to `tradelog` file.
+I haven't found the original project assignment. We had the task of writing the whole project to [tradelog](https://github.com/bivaD/IOS-project-Bash-Stock-logs-filtering-/blob/master/tradelog) file.
 
 
 ## README TO TEST SUITE:
